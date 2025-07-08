@@ -6,6 +6,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\LogController;
 
 /*
 |--------------------------------------------------------------------------
@@ -39,6 +40,10 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
         Route::post('/', [UserController::class, 'store'])
             ->middleware('permission:users.create');
 
+        // Bulk update users (requires user edit permission)
+        Route::put('bulk', [UserController::class, 'bulkUpdate'])
+            ->middleware('permission:users.edit');
+
         // View specific user (requires user view permission)
         Route::get('{id}', [UserController::class, 'show'])
             ->middleware('permission:users.view');
@@ -56,8 +61,12 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
             ->middleware('permission:users.edit');
 
         // Assign role to user (requires user edit permission)
-        Route::patch('role/{id}', [UserController::class, 'assignRole'])
+        Route::patch('{id}/role', [UserController::class, 'assignRole'])
             ->middleware('permission:users.edit');
+
+        // Get user audit history (requires user view permission)
+        Route::get('{id}/audit-history', [UserController::class, 'getUserAuditHistory'])
+            ->middleware('permission:users.view');
 
         // Update own profile (any authenticated user)
         Route::put('profile/update', [UserController::class, 'updateProfile']);
@@ -108,6 +117,14 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
         Route::post('bulk', [PermissionController::class, 'bulkCreate'])
             ->middleware('permission:permissions.create');
 
+        // Bulk update permissions (requires permission edit permission)
+        Route::put('bulk', [PermissionController::class, 'bulkUpdate'])
+            ->middleware('permission:permissions.edit');
+
+        // Bulk delete permissions (requires permission delete permission)
+        Route::delete('bulk', [PermissionController::class, 'bulkDelete'])
+            ->middleware('permission:permissions.delete');
+
         // View specific permission (requires permission view permission)
         Route::get('{id}', [PermissionController::class, 'show'])
             ->middleware('permission:permissions.view');
@@ -120,8 +137,24 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
         Route::delete('{id}', [PermissionController::class, 'destroy'])
             ->middleware('permission:permissions.delete');
 
+        // Toggle permission status (requires permission edit permission)
+        Route::patch('{id}/status', [PermissionController::class, 'toggleStatus'])
+            ->middleware('permission:permissions.edit');
+
+        // Search permissions (requires permission view permission)
+        Route::get('search', [PermissionController::class, 'search'])
+            ->middleware('permission:permissions.view');
+
+        // Get permission statistics (requires permission view permission)
+        Route::get('statistics', [PermissionController::class, 'getStatistics'])
+            ->middleware('permission:permissions.view');
+
         // Get modules (requires permission view permission)
         Route::get('modules/list', [PermissionController::class, 'getModules'])
+            ->middleware('permission:permissions.view');
+
+        // Get actions (requires permission view permission)
+        Route::get('actions/list', [PermissionController::class, 'getActions'])
             ->middleware('permission:permissions.view');
     });
 
@@ -139,6 +172,8 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
                 ], 200);
 
             } catch (\Exception $e) {
+                \App\Models\ErrorLog::logException($e, $request->user()->id);
+                
                 return response()->json([
                     'success' => false,
                     'message' => 'Failed to retrieve dashboard stats',
@@ -159,6 +194,8 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
                 ], 200);
 
             } catch (\Exception $e) {
+                \App\Models\ErrorLog::logException($e, $request->user()->id);
+                
                 return response()->json([
                     'success' => false,
                     'message' => 'Failed to retrieve user reports',
@@ -179,6 +216,8 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
                 ], 200);
 
             } catch (\Exception $e) {
+                \App\Models\ErrorLog::logException($e, $request->user()->id);
+                
                 return response()->json([
                     'success' => false,
                     'message' => 'Failed to retrieve role reports',
@@ -188,47 +227,51 @@ Route::middleware(['custom.auth', 'activity.logger'])->group(function () {
         })->middleware('permission:reports.view');
     });
 
-    // Activity logs routes (super admin only)
+    // Comprehensive Logging routes
     Route::prefix('logs')->group(function () {
-        Route::get('activity', function (Request $request) {
-            try {
-                $query = \App\Models\ActivityLog::query();
+        
+        // Activity logs (existing functionality)
+        Route::get('activity', [LogController::class, 'getActivityLogs'])
+            ->middleware('permission:logs.view');
 
-                // Filter by user
-                if ($request->has('user_id')) {
-                    $query->where('user_id', $request->user_id);
-                }
+        // Audit logs
+        Route::get('audit', [LogController::class, 'getAuditLogs'])
+            ->middleware('permission:logs.view');
 
-                // Filter by action
-                if ($request->has('action')) {
-                    $query->where('action', 'like', '%' . $request->action . '%');
-                }
+        // Error logs
+        Route::get('error', [LogController::class, 'getErrorLogs'])
+            ->middleware('permission:logs.view');
 
-                // Filter by date range
-                if ($request->has('from_date')) {
-                    $query->whereDate('created_at', '>=', $request->from_date);
-                }
+        // Get record audit history
+        Route::get('audit/record/{tableName}/{recordId}', [LogController::class, 'getRecordAuditHistory'])
+            ->middleware('permission:logs.view');
 
-                if ($request->has('to_date')) {
-                    $query->whereDate('created_at', '<=', $request->to_date);
-                }
+        // Error statistics
+        Route::get('error/statistics', [LogController::class, 'getErrorStatistics'])
+            ->middleware('permission:logs.view');
 
-                $perPage = $request->get('per_page', 15);
-                $logs = $query->orderBy('created_at', 'desc')->paginate($perPage);
+        // Audit statistics
+        Route::get('audit/statistics', [LogController::class, 'getAuditStatistics'])
+            ->middleware('permission:logs.view');
 
-                return response()->json([
-                    'success' => true,
-                    'data' => $logs,
-                    'message' => 'Activity logs retrieved successfully'
-                ], 200);
+        // Critical errors
+        Route::get('error/critical', [LogController::class, 'getCriticalErrors'])
+            ->middleware('permission:logs.view');
 
-            } catch (\Exception $e) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Failed to retrieve activity logs',
-                    'error' => $e->getMessage()
-                ], 500);
-            }
-        })->middleware('permission:logs.view');
+        // Errors by type
+        Route::get('error/type/{errorType}', [LogController::class, 'getErrorsByType'])
+            ->middleware('permission:logs.view');
+
+        // Log summary dashboard
+        Route::get('summary', [LogController::class, 'getLogSummary'])
+            ->middleware('permission:logs.view');
+
+        // Export logs
+        Route::get('export', [LogController::class, 'exportLogs'])
+            ->middleware('permission:logs.export');
+
+        // Clean old logs (admin only)
+        Route::post('clean', [LogController::class, 'cleanOldLogs'])
+            ->middleware('permission:logs.admin');
     });
 });

@@ -6,6 +6,8 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use App\Models\Role;
 use App\Models\ActivityLog;
+use App\Models\AuditLog;
+use App\Models\ErrorLog;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
@@ -14,7 +16,6 @@ class UserController extends Controller
 {
     public function index(Request $request)
     {
-       
         try {
             $query = User::with('role');
 
@@ -56,6 +57,9 @@ class UserController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to retrieve users',
@@ -66,7 +70,6 @@ class UserController extends Controller
 
     public function store(Request $request)
     {
-
         $validator = Validator::make($request->all(), [
             'name' => 'required|string|max:255',
             'email' => 'required|string|email|max:255|unique:users',
@@ -76,6 +79,9 @@ class UserController extends Controller
         ]);
 
         if ($validator->fails()) {
+            // Log validation error
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
@@ -110,6 +116,9 @@ class UserController extends Controller
                 'response_status' => 201,
             ]);
 
+            // Log audit
+            AuditLog::logCreate($user, $request->user()->id, 'User created via API');
+
             return response()->json([
                 'success' => true,
                 'message' => 'User created successfully',
@@ -117,6 +126,9 @@ class UserController extends Controller
             ], 201);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to create user',
@@ -146,6 +158,9 @@ class UserController extends Controller
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'User not found',
@@ -154,77 +169,85 @@ class UserController extends Controller
         }
     }
 
-public function update(Request $request, $id)
-{
-    $validator = Validator::make($request->all(), [
-        'name' => 'sometimes|string|max:255',
-        'email' => 'sometimes|email|unique:users,email,' . $id, // optional but validated if present
-        'password' => 'sometimes|nullable|string|min:8|confirmed',
-        'role_id' => 'sometimes|exists:roles,id',
-        'status' => 'sometimes|in:active,inactive,suspended',
-    ]);
-
-    if ($validator->fails()) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Validation failed',
-            'errors' => $validator->errors()
-        ], 422);
-    }
-
-    try {
-        $user = User::findOrFail($id);
-        $oldData = $user->toArray();
-        $updateData = [];
-
-        if ($request->has('name')) {
-            $updateData['name'] = $request->name;
-        }
-        if ($request->has('email')) {
-            $updateData['email'] = $request->email;
-        }
-        if ($request->has('role_id')) {
-            $updateData['role_id'] = $request->role_id;
-        }
-        if ($request->has('status')) {
-            $updateData['status'] = $request->status;
-        }
-        if ($request->filled('password')) {
-            $updateData['password'] = Hash::make($request->password);
-        }
-
-        $user->update($updateData);
-        $user->load('role');
-
-        // Log activity
-        ActivityLog::createLog([
-            'user_id' => $request->user()->id,
-            'action' => 'user_updated',
-            'table_name' => 'users',
-            'record_id' => $user->id,
-            'request_data' => $request->except(['password', 'password_confirmation']),
-            'response_data' => [
-                'old_data' => $oldData,
-                'new_data' => $user->toArray(),
-            ],
-            'response_status' => 200,
+    public function update(Request $request, $id)
+    {
+        $validator = Validator::make($request->all(), [
+            'name' => 'sometimes|string|max:255',
+            'email' => 'sometimes|email|unique:users,email,' . $id,
+            'password' => 'sometimes|nullable|string|min:8|confirmed',
+            'role_id' => 'sometimes|exists:roles,id',
+            'status' => 'sometimes|in:active,inactive,suspended',
         ]);
 
-        return response()->json([
-            'success' => true,
-            'message' => 'User updated successfully',
-            'data' => $user
-        ], 200);
+        if ($validator->fails()) {
+            // Log validation error
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
 
-    } catch (\Exception $e) {
-        return response()->json([
-            'success' => false,
-            'message' => 'Failed to update user',
-            'error' => $e->getMessage()
-        ], 500);
+        try {
+            $user = User::findOrFail($id);
+            $oldData = $user->toArray();
+            $updateData = [];
+
+            if ($request->has('name')) {
+                $updateData['name'] = $request->name;
+            }
+            if ($request->has('email')) {
+                $updateData['email'] = $request->email;
+            }
+            if ($request->has('role_id')) {
+                $updateData['role_id'] = $request->role_id;
+            }
+            if ($request->has('status')) {
+                $updateData['status'] = $request->status;
+            }
+            if ($request->filled('password')) {
+                $updateData['password'] = Hash::make($request->password);
+            }
+
+            $user->update($updateData);
+            $user->load('role');
+
+            // Log activity
+            ActivityLog::createLog([
+                'user_id' => $request->user()->id,
+                'action' => 'user_updated',
+                'table_name' => 'users',
+                'record_id' => $user->id,
+                'request_data' => $request->except(['password', 'password_confirmation']),
+                'response_data' => [
+                    'old_data' => $oldData,
+                    'new_data' => $user->toArray(),
+                ],
+                'response_status' => 200,
+            ]);
+
+            // Log audit
+            AuditLog::logUpdate($user, $oldData, $request->user()->id, 'User updated via API');
+
+            return response()->json([
+                'success' => true,
+                'message' => 'User updated successfully',
+                'data' => $user
+            ], 200);
+
+        } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update user',
+                'error' => $e->getMessage()
+            ], 500);
+        }
     }
-}
-
 
     public function destroy(Request $request, $id)
     {
@@ -233,6 +256,9 @@ public function update(Request $request, $id)
 
             // Prevent user from deleting themselves
             if ($user->id === $request->user()->id) {
+                // Log authorization error
+                ErrorLog::logAuthorizationError('User attempted to delete their own account', $request->user()->id);
+                
                 return response()->json([
                     'success' => false,
                     'message' => 'You cannot delete your own account'
@@ -240,6 +266,10 @@ public function update(Request $request, $id)
             }
 
             $oldData = $user->toArray();
+
+            // Log audit before deletion
+            AuditLog::logDelete($user, $request->user()->id, 'User deleted via API');
+
             $user->delete();
 
             // Log activity
@@ -258,6 +288,9 @@ public function update(Request $request, $id)
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to delete user',
@@ -277,6 +310,9 @@ public function update(Request $request, $id)
         ]);
 
         if ($validator->fails()) {
+            // Log validation error
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
@@ -291,6 +327,9 @@ public function update(Request $request, $id)
             // Check current password if new password is provided
             if ($request->filled('password')) {
                 if (!Hash::check($request->current_password, $user->password)) {
+                    // Log authentication error
+                    ErrorLog::logAuthError('Incorrect current password provided during profile update', $user->id);
+                    
                     return response()->json([
                         'success' => false,
                         'message' => 'Current password is incorrect'
@@ -321,6 +360,9 @@ public function update(Request $request, $id)
                 'response_status' => 200,
             ]);
 
+            // Log audit
+            AuditLog::logUpdate($user, $oldData, $user->id, 'Profile updated by user');
+
             return response()->json([
                 'success' => true,
                 'message' => 'Profile updated successfully',
@@ -328,6 +370,9 @@ public function update(Request $request, $id)
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update profile',
@@ -343,6 +388,9 @@ public function update(Request $request, $id)
         ]);
 
         if ($validator->fails()) {
+            // Log validation error
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
@@ -352,6 +400,7 @@ public function update(Request $request, $id)
 
         try {
             $user = User::findOrFail($id);
+            $oldData = $user->toArray();
             $oldStatus = $user->status;
 
             $user->update(['status' => $request->status]);
@@ -370,6 +419,9 @@ public function update(Request $request, $id)
                 'response_status' => 200,
             ]);
 
+            // Log audit
+            AuditLog::logUpdate($user, $oldData, $request->user()->id, 'User status changed via API');
+
             return response()->json([
                 'success' => true,
                 'message' => 'User status updated successfully',
@@ -377,6 +429,9 @@ public function update(Request $request, $id)
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to update user status',
@@ -387,12 +442,14 @@ public function update(Request $request, $id)
 
     public function assignRole(Request $request, $id)
     {
-       
         $validator = Validator::make($request->all(), [
             'role_id' => 'required|exists:roles,id',
         ]);
 
         if ($validator->fails()) {
+            // Log validation error
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Validation failed',
@@ -402,6 +459,7 @@ public function update(Request $request, $id)
 
         try {
             $user = User::findOrFail($id);
+            $oldData = $user->toArray();
             $oldRoleId = $user->role_id;
 
             $user->update(['role_id' => $request->role_id]);
@@ -421,6 +479,9 @@ public function update(Request $request, $id)
                 'response_status' => 200,
             ]);
 
+            // Log audit
+            AuditLog::logUpdate($user, $oldData, $request->user()->id, 'Role assigned to user via API');
+
             return response()->json([
                 'success' => true,
                 'message' => 'Role assigned successfully',
@@ -428,9 +489,159 @@ public function update(Request $request, $id)
             ], 200);
 
         } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
             return response()->json([
                 'success' => false,
                 'message' => 'Failed to assign role',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Get user's audit history
+    public function getUserAuditHistory(Request $request, $id)
+    {
+        try {
+            $user = User::findOrFail($id);
+            $auditHistory = AuditLog::getRecordHistory('users', $id);
+
+            // Log activity
+            ActivityLog::createLog([
+                'user_id' => $request->user()->id,
+                'action' => 'user_audit_history_viewed',
+                'table_name' => 'users',
+                'record_id' => $id,
+                'response_status' => 200,
+            ]);
+
+            return response()->json([
+                'success' => true,
+                'data' => [
+                    'user' => $user,
+                    'audit_history' => $auditHistory
+                ],
+                'message' => 'User audit history retrieved successfully'
+            ], 200);
+
+        } catch (\Exception $e) {
+            // Log error
+            ErrorLog::logException($e, $request->user()->id);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to retrieve user audit history',
+                'error' => $e->getMessage()
+            ], 500);
+        }
+    }
+
+    // Bulk operations with comprehensive logging
+    public function bulkUpdate(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'users' => 'required|array|min:1',
+            'users.*.id' => 'required|exists:users,id',
+            'users.*.name' => 'sometimes|string|max:255',
+            'users.*.email' => 'sometimes|email',
+            'users.*.role_id' => 'sometimes|exists:roles,id',
+            'users.*.status' => 'sometimes|in:active,inactive,suspended',
+        ]);
+
+        if ($validator->fails()) {
+            ErrorLog::logValidationError($validator->errors(), $request->user()->id);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        try {
+            $updatedUsers = [];
+            $errors = [];
+            $updatedCount = 0;
+
+            foreach ($request->users as $index => $userData) {
+                try {
+                    $user = User::findOrFail($userData['id']);
+                    $oldData = $user->toArray();
+
+                    // Check email uniqueness
+                    if (isset($userData['email'])) {
+                        $existingUser = User::where('email', $userData['email'])
+                            ->where('id', '!=', $user->id)
+                            ->first();
+                        
+                        if ($existingUser) {
+                            $errors[] = [
+                                'index' => $index,
+                                'user_id' => $userData['id'],
+                                'error' => 'Email already exists'
+                            ];
+                            continue;
+                        }
+                    }
+
+                    $updateData = array_intersect_key($userData, array_flip(['name', 'email', 'role_id', 'status']));
+                    $user->update($updateData);
+                    $user->load('role');
+
+                    // Log audit for each user
+                    AuditLog::logUpdate($user, $oldData, $request->user()->id, 'Bulk update via API');
+
+                    $updatedUsers[] = $user;
+                    $updatedCount++;
+
+                } catch (\Exception $e) {
+                    ErrorLog::logException($e, $request->user()->id, ['bulk_update_index' => $index]);
+                    $errors[] = [
+                        'index' => $index,
+                        'user_id' => $userData['id'] ?? null,
+                        'error' => $e->getMessage()
+                    ];
+                }
+            }
+
+            // Log activity
+            ActivityLog::createLog([
+                'user_id' => $request->user()->id,
+                'action' => 'users_bulk_updated',
+                'table_name' => 'users',
+                'request_data' => $request->all(),
+                'response_data' => [
+                    'updated_count' => $updatedCount,
+                    'errors_count' => count($errors)
+                ],
+                'response_status' => $updatedCount > 0 ? 200 : 400,
+            ]);
+
+            if ($updatedCount === 0) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'No users were updated',
+                    'errors' => $errors
+                ], 400);
+            }
+
+            return response()->json([
+                'success' => true,
+                'message' => "{$updatedCount} users updated successfully",
+                'data' => [
+                    'updated_users' => $updatedUsers,
+                    'updated_count' => $updatedCount,
+                    'errors' => $errors
+                ]
+            ], 200);
+
+        } catch (\Exception $e) {
+            ErrorLog::logException($e, $request->user()->id);
+            
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to update users',
                 'error' => $e->getMessage()
             ], 500);
         }
